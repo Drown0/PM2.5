@@ -19,19 +19,28 @@ st.title("🌬️ Predictor de Calidad del Aire (MP2.5)")
 @st.cache_resource
 def load_resources():
     try:
-        model = joblib.load('modelo_final_mp25.joblib')
-        features = joblib.load('features_list.joblib')
+        # Obtener la ruta absoluta de la carpeta donde está este script
+        base_path = os.path.dirname(__file__)
+        model_path = os.path.join(base_path, 'modelo_final_mp25.joblib')
+        features_path = os.path.join(base_path, 'features_list.joblib')
+
+        model = joblib.load(model_path)
+        features = joblib.load(features_path)
         return model, features
     except Exception as e:
-        st.error(f"Error al cargar archivos del modelo: {e}")
+        st.error(f"Error al cargar los archivos del modelo: {e}")
         return None, None
+
 
 model, features_list = load_resources()
 
 # --- FUNCIÓN DE DATOS HÍBRIDA (VIVO + LOCAL) ---
 def get_hybrid_data():
     url = "https://sinca.mma.gob.cl/cgi-bin/ap_ex_csv.cgi?id=83&param=MP25&type=diario"
-    local_file = "datos_respaldo.csv"
+    
+    # Obtener la ruta absoluta de la carpeta donde está este script
+    base_path = os.path.dirname(__file__)
+    local_file = os.path.join(base_path, "datos_respaldo.csv")
     
     # 1. INTENTO VIVO (SINCA)
     try:
