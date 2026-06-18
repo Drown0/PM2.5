@@ -7,7 +7,7 @@ Este proyecto desarrolla un sistema de minería de datos para la predicción de 
 
 ## 🚀 Acceso a la Demo en Vivo
 Puedes probar la aplicación interactiva desplegada en Streamlit Cloud aquí:
-**https://pm25-prediccion-del-aire.streamlit.app/**
+**https://pm25-v2.streamlit.app/**
 
 ---
 
