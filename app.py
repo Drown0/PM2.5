@@ -5,19 +5,18 @@ import numpy as np
 import plotly.express as px
 import requests
 import io
+import os
 from datetime import datetime, timedelta
 import warnings
 
 # Configuración de página
 st.set_page_config(page_title="Predictor MP2.5 - Parque O'Higgins", layout="wide")
-
-# Ignorar advertencias de SSL para el SINCA
 warnings.filterwarnings('ignore')
 
-st.title("🌬️ Predicción Automática de Calidad del Aire (MP2.5)")
+st.title("🌬️ Predictor de Calidad del Aire (MP2.5)")
 st.markdown("""
-Esta herramienta se conecta en tiempo real al **SINCA** para predecir la contaminación de mañana 
-en la estación Parque O'Higgins usando un modelo de **Stacking Ensemble (XGBoost + LightGBM + CatBoost)**.
+Esta herramienta predice la contaminación de mañana en la estación Parque O'Higgins.
+**Sistema de Datos:** Prioriza conexión en tiempo real con SINCA; usa base de datos local como respaldo.
 """)
 
 # Cargar Modelo y Features
@@ -28,72 +27,70 @@ def load_resources():
         features = joblib.load('features_list.joblib')
         return model, features
     except Exception as e:
-        st.error(f"Error al cargar los archivos del modelo: {e}")
+        st.error(f"Error al cargar archivos del modelo: {e}")
         return None, None
 
 model, features_list = load_resources()
 
-# --- FUNCIÓN DE SCRAPING MEJORADA Y ROBUSTA ---
-def get_live_sinca_data():
+# --- FUNCIÓN DE DATOS HÍBRIDA (VIVO + LOCAL) ---
+def get_hybrid_data():
     url = "https://sinca.mma.gob.cl/cgi-bin/ap_ex_csv.cgi?id=83&param=MP25&type=diario"
-    # Valores por defecto en caso de cualquier falla
-    default_vals = (30.0, 25.0, 20.0, 22.0, False)
+    local_file = "datos_respaldo.csv"
     
+    # 1. INTENTO VIVO (SINCA)
     try:
-        response = requests.get(url, verify=False, timeout=15)
+        response = requests.get(url, verify=False, timeout=8)
         if response.status_code == 200 and "FECHA" in response.text:
             df = pd.read_csv(io.StringIO(response.text), sep=';', decimal=',').tail(15)
-            # Limpiar nombres de columnas por si traen espacios
             df.columns = [c.strip() for c in df.columns]
-            
-            # Consolidar MP2.5
-            # Intentamos detectar las columnas correctas basándonos en el formato conocido
-            col_val = 'Registros validados'
-            col_pre = 'Registros preliminares'
-            col_no = 'Registros no validados'
-            
-            if col_val in df.columns:
-                df['MP25'] = df[col_val].fillna(df.get(col_pre, np.nan)).fillna(df.get(col_no, np.nan))
-            else:
-                # Si las columnas cambiaron, buscamos la primera columna numérica después de la hora
-                df['MP25'] = df.iloc[:, 2] 
-            
+            df['MP25'] = df['Registros validados'].fillna(df.get('Registros preliminares', np.nan)).fillna(df.get('Registros no validados', np.nan))
             df = df.dropna(subset=['MP25'])
             vals = df['MP25'].tolist()
-            
-            # Verificar que tengamos suficientes datos para desempaquetar
             if len(vals) >= 3:
-                l1 = vals[-1]
-                l2 = vals[-2]
-                l3 = vals[-3]
-                l7 = np.mean(vals[-7:]) if len(vals) >= 7 else np.mean(vals)
-                return float(l1), float(l2), float(l3), float(l7), True
-        
-        return default_vals
-    except Exception:
-        return default_vals
+                return vals[-1], vals[-2], vals[-3], np.mean(vals[-7:]), "En Vivo (SINCA)"
+    except:
+        pass
 
-# --- LÓGICA DE DATOS CON SESSION STATE ---
+    # 2. INTENTO LOCAL (CSV en GitHub)
+    if os.path.exists(local_file):
+        try:
+            df_local = pd.read_csv(local_file, sep=';', decimal=',').tail(15)
+            df_local.columns = [c.strip() for c in df_local.columns]
+            df_local['MP25'] = df_local['Registros validados'].fillna(df_local.get('Registros preliminares', np.nan))
+            df_local = df_local.dropna(subset=['MP25'])
+            vals = df_local['MP25'].tolist()
+            if len(vals) >= 3:
+                return vals[-1], vals[-2], vals[-3], np.mean(vals[-7:]), "Respaldo Local (CSV)"
+        except:
+            pass
+
+    # 3. ÚLTIMO RECURSO
+    return 30.0, 25.0, 20.0, 22.0, "Valores por Defecto"
+
+# --- LÓGICA DE SESIÓN ---
 if 'l1' not in st.session_state:
-    l1, l2, l3, l7, success = get_live_sinca_data()
-    st.session_state.l1, st.session_state.l2, st.session_state.l3, st.session_state.l7, st.session_state.success = l1, l2, l3, l7, success
+    l1, l2, l3, l7, source = get_hybrid_data()
+    st.session_state.l1, st.session_state.l2, st.session_state.l3, st.session_state.l7, st.session_state.source = l1, l2, l3, l7, source
 
-if st.session_state.success:
-    st.success(f"✅ Datos sincronizados con el SINCA (Actualización: {datetime.now().strftime('%H:%M:%S')})")
+# Mostrar estado de conexión
+if "Vivo" in st.session_state.source:
+    st.success(f"✅ Conectado al SINCA. Datos actualizados en tiempo real.")
+elif "Respaldo" in st.session_state.source:
+    st.info(f"📂 Usando base de datos histórica (CSV). El servidor del SINCA no está disponible.")
 else:
-    st.warning("⚠️ El servidor del SINCA no respondió. Se cargaron valores de referencia.")
+    st.warning("⚠️ Sin conexión a datos. Usando valores de prueba.")
 
-# Sidebar para entradas manuales y control
-st.sidebar.header("Panel de Control")
-if st.sidebar.button("🔄 Forzar Sincronización"):
-    l1, l2, l3, l7, success = get_live_sinca_data()
-    st.session_state.l1, st.session_state.l2, st.session_state.l3, st.session_state.l7, st.session_state.success = l1, l2, l3, l7, success
+# Sidebar
+st.sidebar.header("Ajuste de Variables")
+if st.sidebar.button("🔄 Intentar Sincronizar"):
+    l1, l2, l3, l7, source = get_hybrid_data()
+    st.session_state.l1, st.session_state.l2, st.session_state.l3, st.session_state.l7, st.session_state.source = l1, l2, l3, l7, source
     st.rerun()
 
 lag_1 = st.sidebar.number_input("MP2.5 Hoy (µg/m³)", value=float(st.session_state.l1))
 lag_2 = st.sidebar.number_input("MP2.5 Ayer (µg/m³)", value=float(st.session_state.l2))
-lag_3 = st.sidebar.number_input("MP2.5 hace 2 días (µg/m³)", value=float(st.session_state.l3))
-lag_7_avg = st.sidebar.number_input("Promedio última semana", value=float(st.session_state.l7))
+lag_3 = st.sidebar.number_input("MP2.5 hace 2 días", value=float(st.session_state.l3))
+lag_7_avg = st.sidebar.number_input("Promedio 7 días", value=float(st.session_state.l7))
 
 # --- PREDICCIÓN ---
 def prepare_input(l1, l2, l3, l7_avg):
@@ -101,7 +98,6 @@ def prepare_input(l1, l2, l3, l7_avg):
     rolling_std_3 = np.std([l1, l2, l3])
     diff_1 = l1 - l2
     mañana = datetime.now() + timedelta(days=1)
-    
     input_data = pd.DataFrame([{
         'lag_1': l1, 'lag_2': l2, 'lag_3': l3,
         'rolling_mean_3': rolling_3, 'rolling_std_3': rolling_std_3,
@@ -112,45 +108,28 @@ def prepare_input(l1, l2, l3, l7_avg):
     }])
     return input_data
 
-if model is not None:
+if model:
     input_df = prepare_input(lag_1, lag_2, lag_3, lag_7_avg)
     prediccion = model.predict(input_df)[0]
 
-    # --- VISUALIZACIÓN ---
-    col1, col2 = st.columns([1, 1])
-
+    col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Pronóstico para Mañana")
-        st.metric("Concentración Predicha", f"{prediccion:.2f} µg/m³")
-        
-        # Categorización Normativa Chilena
-        if prediccion <= 50:
-            st.success("Estado: BUENO")
-            st.write("Aire de calidad óptima. Sin restricciones.")
-        elif prediccion <= 79:
-            st.warning("Estado: REGULAR")
-            st.write("Calidad aceptable, pero precaución en grupos sensibles.")
-        elif prediccion <= 109:
-            st.error("Estado: ALERTA")
-            st.write("Posibles restricciones. Evite ejercicio intenso.")
-        elif prediccion <= 169:
-            st.error("Estado: PRE-EMERGENCIA")
-            st.write("Restricción vehicular y prohibición de humos visibles.")
-        else:
-            st.error("Estado: EMERGENCIA")
-            st.write("Condición crítica. Máxima restricción sanitaria.")
+        st.subheader("Predicción de Mañana")
+        st.metric("MP2.5", f"{prediccion:.2f} µg/m³")
+        if prediccion <= 50: st.success("BUENO")
+        elif prediccion <= 79: st.warning("REGULAR")
+        elif prediccion <= 109: st.error("ALERTA")
+        elif prediccion <= 169: st.error("PRE-EMERGENCIA")
+        else: st.error("EMERGENCIA")
 
     with col2:
         tendencia = pd.DataFrame({
-            'Día': ['Hace 2 días', 'Ayer', 'Hoy', 'MAÑANA (Pred)'],
+            'Día': ['-2 días', 'Ayer', 'Hoy', 'MAÑANA'],
             'MP2.5': [lag_3, lag_2, lag_1, prediccion]
         })
-        fig = px.line(tendencia, x='Día', y='MP2.5', title="Trayectoria de la Calidad del Aire", markers=True)
-        fig.update_layout(yaxis_title="µg/m³", hovermode="x")
-        fig.add_hline(y=50, line_dash="dot", annotation_text="Límite Bueno", line_color="green")
+        fig = px.line(tendencia, x='Día', y='MP2.5', markers=True, title="Tendencia")
+        fig.add_hline(y=50, line_dash="dot", line_color="green", annotation_text="Límite Bueno")
         st.plotly_chart(fig, use_container_width=True)
-else:
-    st.error("No se pudo cargar el modelo predictivo. Verifique que los archivos .joblib estén en el repositorio.")
 
 st.markdown("---")
-st.caption("Proyecto Final - Minería de Datos | Alumno: [Tu Nombre] | Fuente: SINCA MMA | Modelo: Stacking Ensemble v1.2")
+st.caption(f"Fuente de datos actual: {st.session_state.source}")
