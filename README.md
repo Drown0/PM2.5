@@ -17,7 +17,6 @@ El repositorio está organizado siguiendo el ciclo de vida de un proyecto de Cie
 
 - **`01_Entrenamiento/`**: Scripts de Python para la extracción, ingeniería de características y entrenamiento del modelo Stacking.
 - **`02_App_Publicada/`**: Código fuente de la interfaz de usuario, archivos del modelo persistido (`.joblib`) y base de datos de respaldo.
-- **`03_Material_Presentacion/`**: Guías de defensa técnica y recursos para la exposición final.
 
 ---
 
