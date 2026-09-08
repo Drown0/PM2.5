@@ -14,45 +14,66 @@ import joblib
 
 warnings.filterwarnings('ignore')
 
-def download_sinca_data(station_id=83, parameter='MP25'):
+def download_sinca_data(from_year_yy=0):
     """
-    Intenta descargar datos del SINCA, si falla usa el archivo local de la Entrega 3.
+    Descarga la serie historica completa de PM2.5 directamente desde SINCA (Parque O'Higgins).
+    Si falla la conexion, recurre a los datos locales de respaldo.
     """
-    # Intentamos la URL que suele funcionar en el portal nuevo
-    url = f"https://sinca.mma.gob.cl/cgi-bin/ap_ex_csv.cgi?id={station_id}&param={parameter}&type=diario"
+    from datetime import datetime
+    today_str = datetime.now().strftime('%y%m%d')
+    from_str = f"{from_year_yy:02d}0101"
+
+    url = (
+        "https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?"
+        "outtype=xcl&"
+        "macro=./RM/D14/Cal/PM25//PM25.diario.diario.ic&"
+        f"from={from_str}&"
+        f"to={today_str}&"
+        "path=/usr/airviro/data/CONAMA/&"
+        "lang=esp&rsrc=&macropath="
+    )
     try:
-        response = requests.get(url, verify=False, timeout=10)
+        response = requests.get(url, verify=False, timeout=30)
         if response.status_code == 200 and 'FECHA' in response.text:
-            df = pd.read_csv(io.StringIO(response.text), sep=';', decimal=',', na_values=['', ' ', 'NaN'])
-            print("Datos descargados exitosamente del SINCA.")
+            df = pd.read_csv(
+                io.StringIO(response.text),
+                sep=';',
+                decimal=',',
+                na_values=['', ' ', 'NaN'],
+                dtype={'FECHA (YYMMDD)': str}
+            )
+            print(f"Datos descargados exitosamente del SINCA en tiempo real (hasta {today_str}).")
         else:
             raise Exception("URL no disponible o formato incorrecto")
     except Exception as e:
         print(f"Aviso: No se pudo conectar al SINCA ({e}). Usando datos locales de Entrega 3...")
-        # Ruta al archivo local proporcionado en el contexto
         local_path = r'C:\Users\Usuario\Documents\Personal\Universidad\Semestres\7° Semestre\Minería de datos\Entrega 3\datos_000101_260508.csv'
-        df = pd.read_csv(local_path, sep=';', decimal=',', na_values=['', ' ', 'NaN'])
+        df = pd.read_csv(local_path, sep=';', decimal=',', na_values=['', ' ', 'NaN'], dtype={'FECHA (YYMMDD)': str})
 
-    # Limpieza estándar para ambos casos
+    # Limpieza estandar para ambos casos
     df.columns = [c.strip() for c in df.columns]
     
-    # Transformación de fechas (YYMMDD)
-    df['FECHA_STR'] = df['FECHA (YYMMDD)'].astype(str).str.zfill(6)
+    # Transformacion de fechas (YYMMDD)
+    df['FECHA_STR'] = df['FECHA (YYMMDD)'].astype(str).str.split('.').str[0].str.zfill(6)
     df['Fecha'] = pd.to_datetime(df['FECHA_STR'], format='%y%m%d')
     df = df.sort_values('Fecha').reset_index(drop=True)
     
     # Consolidar MP2.5
-    df['MP25'] = df['Registros validados'].fillna(df['Registros preliminares']).fillna(df['Registros no validados'])
+    df['MP25'] = (
+        df['Registros validados']
+        .fillna(df.get('Registros preliminares', np.nan))
+        .fillna(df.get('Registros no validados', np.nan))
+    )
     
     # Eliminar nulos en el target para entrenamiento
     df = df.dropna(subset=['MP25'])
     
     # Tratamiento de outliers: Winsorizar al percentil 99
-    # Los picos extremos (incendios, inversiones térmicas) distorsionan el modelo
+    # Los picos extremos (incendios, inversiones termicas) distorsionan el modelo
     p99 = df['MP25'].quantile(0.99)
     p01 = df['MP25'].quantile(0.01)
     df['MP25'] = df['MP25'].clip(lower=p01, upper=p99)
-    print(f"Outliers tratados: valores limitados al rango [{p01:.1f}, {p99:.1f}] µg/m³")
+    print(f"Outliers tratados: valores limitados al rango [{p01:.1f}, {p99:.1f}] ug/m3")
     
     return df[['Fecha', 'MP25']]
 

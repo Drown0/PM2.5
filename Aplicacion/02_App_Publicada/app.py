@@ -35,47 +35,85 @@ def load_resources():
 model, features_list = load_resources()
 
 # --- FUNCIÓN DE DATOS HÍBRIDA (VIVO + LOCAL) ---
+@st.cache_data(ttl=3600)
+def fetch_sinca_raw():
+    """Descarga los datos más recientes desde el servidor de SINCA en segundo plano con caché de 1 hora."""
+    today_str = datetime.now().strftime('%y%m%d')
+    url = (
+        "https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?"
+        "outtype=xcl&"
+        "macro=./RM/D14/Cal/PM25//PM25.diario.diario.ic&"
+        "from=250101&"
+        f"to={today_str}&"
+        "path=/usr/airviro/data/CONAMA/&"
+        "lang=esp&rsrc=&macropath="
+    )
+    try:
+        response = requests.get(url, verify=False, timeout=12)
+        if response.status_code == 200 and "FECHA" in response.text:
+            return response.text
+    except Exception:
+        pass
+    return None
+
 def get_hybrid_data():
-    url = "https://sinca.mma.gob.cl/cgi-bin/ap_ex_csv.cgi?id=83&param=MP25&type=diario"
-    
-    # Obtener la ruta absoluta de la carpeta donde está este script
     base_path = os.path.dirname(__file__)
     local_file = os.path.join(base_path, "datos_respaldo.csv")
     
     # 1. INTENTO VIVO (SINCA)
     try:
-        response = requests.get(url, verify=False, timeout=8)
-        if response.status_code == 200 and "FECHA" in response.text:
-            df = pd.read_csv(io.StringIO(response.text), sep=';', decimal=',').tail(15)
+        csv_text = fetch_sinca_raw()
+        if csv_text:
+            df = pd.read_csv(
+                io.StringIO(csv_text),
+                sep=';',
+                decimal=',',
+                na_values=['', ' ', 'NaN'],
+                dtype={'FECHA (YYMMDD)': str}
+            ).tail(30)
             df.columns = [c.strip() for c in df.columns]
-            df['MP25'] = df['Registros validados'].fillna(df.get('Registros preliminares', np.nan)).fillna(df.get('Registros no validados', np.nan))
+            df['MP25'] = (
+                df['Registros validados']
+                .fillna(df.get('Registros preliminares', np.nan))
+                .fillna(df.get('Registros no validados', np.nan))
+            )
             df = df.dropna(subset=['MP25'])
             
             # Obtener fecha del último registro
-            last_date_str = str(df.iloc[-1]['FECHA (YYMMDD)']).zfill(6)
+            last_date_str = str(df.iloc[-1]['FECHA (YYMMDD)']).split('.')[0].zfill(6)
             last_date = datetime.strptime(last_date_str, '%y%m%d')
             
             vals = df['MP25'].tolist()
             if len(vals) >= 3:
+                # Actualizar el archivo de respaldo local silenciosamente para mantenerlo al día
+                try:
+                    df.to_csv(local_file, sep=';', decimal=',', index=False)
+                except Exception:
+                    pass
                 return vals[-1], vals[-2], vals[-3], np.mean(vals[-7:]), "En Vivo (SINCA)", last_date
-    except:
+    except Exception:
         pass
 
     # 2. INTENTO LOCAL (CSV en GitHub)
     if os.path.exists(local_file):
         try:
-            df_local = pd.read_csv(local_file, sep=';', decimal=',').tail(15)
+            df_local = pd.read_csv(
+                local_file,
+                sep=';',
+                decimal=',',
+                dtype={'FECHA (YYMMDD)': str}
+            ).tail(15)
             df_local.columns = [c.strip() for c in df_local.columns]
             df_local['MP25'] = df_local['Registros validados'].fillna(df_local.get('Registros preliminares', np.nan))
             df_local = df_local.dropna(subset=['MP25'])
             
-            last_date_str = str(df_local.iloc[-1]['FECHA (YYMMDD)']).zfill(6)
+            last_date_str = str(df_local.iloc[-1]['FECHA (YYMMDD)']).split('.')[0].zfill(6)
             last_date = datetime.strptime(last_date_str, '%y%m%d')
             
             vals = df_local['MP25'].tolist()
             if len(vals) >= 3:
                 return vals[-1], vals[-2], vals[-3], np.mean(vals[-7:]), "Respaldo Local (CSV)", last_date
-        except:
+        except Exception:
             pass
 
     # 3. ÚLTIMO RECURSO
@@ -89,6 +127,7 @@ if 'l1' not in st.session_state:
 # Sidebar
 st.sidebar.header("Ajuste de Variables")
 if st.sidebar.button("🔄 Intentar Sincronizar"):
+    fetch_sinca_raw.clear()
     for key in list(st.session_state.keys()): del st.session_state[key]
     st.rerun()
 
