@@ -5,7 +5,7 @@ import io
 import warnings
 from sklearn.ensemble import StackingRegressor
 from sklearn.linear_model import RidgeCV
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
@@ -109,14 +109,16 @@ def train_professional_model(df):
         ('cat', CatBoostRegressor(n_estimators=200, learning_rate=0.05, depth=5, silent=True))
     ]
     
-    # Stacking con TimeSeriesSplit (evita data leakage temporal)
+    # Stacking con KFold sin shuffle (mantiene bloques temporales secuenciales).
+    # Nota: TimeSeriesSplit no es compatible con StackingRegressor (requiere particiones completas).
+    # La integridad temporal principal ya está garantizada por la división 80/20 cronológica.
     stack_reg = StackingRegressor(
         estimators=estimators,
         final_estimator=RidgeCV(),
-        cv=TimeSeriesSplit(n_splits=5)
+        cv=KFold(n_splits=5, shuffle=False)
     )
     
-    print("Entrenando Stacking Ensemble (con TimeSeriesSplit)...")
+    print("Entrenando Stacking Ensemble...")
     stack_reg.fit(X_train, y_train)
     
     # Evaluación completa: Train vs Test para detectar Overfitting
@@ -128,13 +130,13 @@ def train_professional_model(df):
     rmse = np.sqrt(mean_squared_error(y_test, preds))
     
     print(f"\n{'='*50}")
-    print(f"  DIAGNÓSTICO DEL MODELO")
+    print(f"  DIAGNOSTICO DEL MODELO")
     print(f"{'='*50}")
-    print(f"  R² Train:  {r2_train:.4f}")
-    print(f"  R² Test:   {r2_test:.4f}")
-    print(f"  Diferencia: {r2_train - r2_test:.4f}  {'⚠️ Posible Overfitting' if (r2_train - r2_test) > 0.10 else '✅ OK'}")
-    print(f"  MAE:  {mae:.2f} µg/m³ (error promedio)")
-    print(f"  RMSE: {rmse:.2f} µg/m³ (penaliza errores grandes)")
+    print(f"  R2 Train:  {r2_train:.4f}")
+    print(f"  R2 Test:   {r2_test:.4f}")
+    print(f"  Diferencia: {r2_train - r2_test:.4f}  {'[!] Posible Overfitting' if (r2_train - r2_test) > 0.10 else '[OK]'}")
+    print(f"  MAE:  {mae:.2f} ug/m3 (error promedio)")
+    print(f"  RMSE: {rmse:.2f} ug/m3 (penaliza errores grandes)")
     print(f"{'='*50}\n")
     
     return stack_reg, features
