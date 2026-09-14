@@ -30,14 +30,18 @@ warnings.filterwarnings('ignore')
 def load_resources():
     try:
         base_path = os.path.dirname(__file__)
-        m24_path = os.path.join(base_path, 'modelo_final_mp25_tuneado_24h.joblib')
-        m48_path = os.path.join(base_path, 'modelo_final_mp25_tuneado_48h.joblib')
-        m72_path = os.path.join(base_path, 'modelo_final_mp25_tuneado_72h.joblib')
-        features_path = os.path.join(base_path, 'features_list.joblib')
+        models_dir = os.path.join(base_path, 'modelos')
+        if not os.path.exists(models_dir):
+            models_dir = base_path
+
+        m24_path = os.path.join(models_dir, 'modelo_final_mp25_tuneado_24h.joblib')
+        m48_path = os.path.join(models_dir, 'modelo_final_mp25_tuneado_48h.joblib')
+        m72_path = os.path.join(models_dir, 'modelo_final_mp25_tuneado_72h.joblib')
+        features_path = os.path.join(models_dir, 'features_list.joblib')
 
         # Fallback al modelo base si aún no existieran los tuneados
         if not os.path.exists(m24_path):
-            m24_path = os.path.join(base_path, 'modelo_final_mp25.joblib')
+            m24_path = os.path.join(models_dir, 'modelo_final_mp25.joblib')
 
         m24 = joblib.load(m24_path)
         m48 = joblib.load(m48_path) if os.path.exists(m48_path) else m24

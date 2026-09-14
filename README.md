@@ -15,21 +15,22 @@ PM2.5/
 ├── .gitignore
 ├── README.md
 └── Aplicacion/
-    ├── 01_Entrenamiento/
+    ├── Entrenamiento/
     │   ├── extraer_datos_sinca.py              # Ingesta automatizada desde servidor CGI Airviro
     │   ├── imputar_datos_iterative.py          # Saneamiento de nulos con MICE (BayesianRidge + PM10)
     │   ├── evaluar_modelos_default.py          # Evaluación base y diagnóstico de sobreajuste
     │   ├── optimizar_boosting_optuna.py        # Optimización bayesiana (4.500 trials) con Walk-Forward
     │   ├── optuna_estudio.db                   # Base de datos SQLite con los 4.500 trials persistidos
     │   └── datos/                              # Datasets históricos consolidados e imputados (2020–2026)
-    └── 02_App_Publicada/
+    └── App/
         ├── app.py                             # Interfaz interactiva Streamlit V3 multi-ventana
         ├── requirements.txt                   # Dependencias de producción
         ├── datos_respaldo.csv                 # Respaldo local de contingencia (auto-actualizable con PM2.5 y PM10)
-        ├── features_list.joblib               # Vector de 16 características de ingeniería
-        ├── modelo_final_mp25_tuneado_24h.joblib # Ensamble Stacking optimizado a 24 horas
-        ├── modelo_final_mp25_tuneado_48h.joblib # Ensamble Stacking optimizado a 48 horas
-        └── modelo_final_mp25_tuneado_72h.joblib # Ensamble Stacking optimizado a 72 horas
+        └── modelos/                           # Modelos Stacking y lista de variables persistidos
+            ├── features_list.joblib           # Vector de 16 características de ingeniería
+            ├── modelo_final_mp25_tuneado_24h.joblib # Ensamble Stacking optimizado a 24 horas
+            ├── modelo_final_mp25_tuneado_48h.joblib # Ensamble Stacking optimizado a 48 horas
+            └── modelo_final_mp25_tuneado_72h.joblib # Ensamble Stacking optimizado a 72 horas
 ```
 
 ---

@@ -173,8 +173,9 @@ def optimizar_modelo(nombre_modelo, X_train_val, y_train_val, db_url, n_trials=5
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     datos_dir = os.path.join(base_dir, "datos")
-    data_path = os.path.join(datos_dir, "sinca_pm25_2020_presente_imputado.csv")
-    app_dir = os.path.abspath(os.path.join(base_dir, "..", "02_App_Publicada"))
+    app_dir = os.path.abspath(os.path.join(base_dir, "..", "App", "modelos"))
+    if not os.path.exists(app_dir):
+        app_dir = os.path.abspath(os.path.join(base_dir, "..", "App"))
     os.makedirs(app_dir, exist_ok=True)
     
     db_path = os.path.join(base_dir, "optuna_estudio.db")
