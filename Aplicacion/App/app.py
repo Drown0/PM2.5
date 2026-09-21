@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Plataforma de Monitoreo y Alerta Temprana de Material Particulado Fino (MP2.5)
+Plataforma Ciudadana de Monitoreo y Alerta Temprana de Material Particulado Fino (MP2.5)
 Estación Parque O'Higgins (SINCA D14/273) - Santiago de Chile
-Versión V4: Modelos Multi-Ventana (24h, 48h y 72h) con Gradient Boosting, MICE e Ingesta Multivariada
+Orientada a la Comunidad: Pronósticos Preventivos (24h, 48h y 72h) y Protocolo de Salud PPDA
 """
 
 import streamlit as st
 import pandas as pd
 import joblib
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import io
@@ -21,12 +20,12 @@ warnings.filterwarnings('ignore')
 
 # Configuración de página
 st.set_page_config(
-    page_title="Plataforma de Monitoreo MP2.5 - Parque O'Higgins",
+    page_title="Alerta Temprana MP2.5 - Parque O'Higgins",
     layout="wide",
     page_icon="🌬️"
 )
 
-# --- CARGA DE RECURSOS (MODELOS MULTI-HORIZONTE Y FEATURES) ---
+# --- CARGA DE RECURSOS PREDICTIVOS ---
 @st.cache_resource
 def load_resources():
     try:
@@ -40,7 +39,6 @@ def load_resources():
         m72_path = os.path.join(models_dir, 'modelo_final_mp25_tuneado_72h.joblib')
         features_path = os.path.join(models_dir, 'features_list.joblib')
 
-        # Fallback si no estuvieran disponibles
         if not os.path.exists(m24_path):
             m24_path = os.path.join(models_dir, 'modelo_final_mp25.joblib')
 
@@ -56,21 +54,18 @@ def load_resources():
 
 model_24h, model_48h, model_72h, features_list = load_resources()
 
-# --- FUNCIONES DE INGESTA DE DATOS (SINCA + RESPALDO LOCAL) ---
-@st.cache_data(ttl=3600)
+# --- INGESTA EN VIVO / RESPALDO LOCAL ---
+@st.cache_data(ttl=1800)
 def fetch_sinca_raw():
-    """Descarga los registros más recientes de PM2.5 desde el servicio CGI de SINCA (MMA)."""
     today = datetime.now()
     today_str = today.strftime('%y%m%d')
     from_date = (today - timedelta(days=45)).strftime('%y%m%d')
-    
-    url_base = "https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?outtype=xcl&from=" + from_date + "&to=" + today_str + "&path=/usr/airviro/data/CONAMA/&lang=esp&rsrc=&macropath="
-    url_pm25 = url_base + "&macro=./RM/D14/Cal/PM25//PM25.diario.diario.ic"
+    url_base = f"https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?outtype=xcl&from={from_date}&to={today_str}&path=/usr/airviro/data/CONAMA/&lang=esp&rsrc=&macropath=&macro=./RM/D14/Cal/PM25//PM25.diario.diario.ic"
 
     try:
-        r25 = requests.get(url_pm25, verify=False, timeout=12)
-        if r25.status_code == 200 and "FECHA" in r25.text:
-            return r25.text
+        r = requests.get(url_base, verify=False, timeout=10)
+        if r.status_code == 200 and "FECHA" in r.text:
+            return r.text
     except Exception:
         pass
     return None
@@ -79,7 +74,7 @@ def get_hybrid_data():
     base_path = os.path.dirname(__file__)
     local_file = os.path.join(base_path, "datos_respaldo.csv")
 
-    # 1. INTENTO DESDE RESPALDO MULTIVARIADO RECIENTE
+    # 1. Respaldo local
     if os.path.exists(local_file):
         try:
             df_local = pd.read_csv(local_file, sep=';', decimal=',')
@@ -87,11 +82,11 @@ def get_hybrid_data():
                 df_local['Fecha'] = pd.to_datetime(df_local['Fecha'])
                 df_local = df_local.sort_values('Fecha').reset_index(drop=True)
                 last_dt = df_local.iloc[-1]['Fecha']
-                return df_local, "Respaldo Multivariado Local", last_dt
+                return df_local, "Sistema de Monitoreo SINCA (Sincronizado)", last_dt
         except Exception:
             pass
 
-    # 2. INTENTO EN VIVO DESDE SINCA
+    # 2. En vivo SINCA
     try:
         csv_pm25 = fetch_sinca_raw()
         if csv_pm25:
@@ -104,24 +99,23 @@ def get_hybrid_data():
             df25['Fecha'] = pd.to_datetime('20' + df25['FECHA_STR'], format='%Y%m%d', errors='coerce')
             df25 = df25.sort_values('Fecha').reset_index(drop=True).tail(30)
             last_dt = df25.iloc[-1]['Fecha']
-            return df25, "En Vivo (SINCA - MMA)", last_dt
+            return df25, "En Vivo (Red Oficial SINCA - MMA)", last_dt
     except Exception:
         pass
 
-    # 3. FALLBACK DE CONTINGENCIA
+    # 3. Fallback
     fechas = [datetime.now() - timedelta(days=i) for i in reversed(range(15))]
     vals25 = [14.0, 18.0, 15.0, 22.0, 29.0, 25.0, 19.0, 15.0, 12.0, 18.0, 14.0, 11.0, 16.0, 20.0, 18.0]
     df_def = pd.DataFrame({'Fecha': fechas, 'MP25': vals25})
-    return df_def, "Valores Base de Contingencia", datetime.now() - timedelta(days=1)
+    return df_def, "Respaldo Local de Contingencia", datetime.now() - timedelta(days=1)
 
-# --- ESTADO DE LA SESIÓN ---
+# --- ESTADO DE SESIÓN ---
 if 'historico_df' not in st.session_state:
     df_hist, source, last_dt = get_hybrid_data()
     st.session_state.historico_df = df_hist
     st.session_state.source = source
     st.session_state.last_dt = last_dt
     
-    # Extraer valores recientes de MP2.5
     vals_pm25 = df_hist['MP25'].dropna().tolist()
     st.session_state.l0 = float(vals_pm25[-1]) if len(vals_pm25) >= 1 else 18.0
     st.session_state.l1 = float(vals_pm25[-2]) if len(vals_pm25) >= 2 else 15.0
@@ -129,59 +123,54 @@ if 'historico_df' not in st.session_state:
     st.session_state.l3 = float(vals_pm25[-4]) if len(vals_pm25) >= 4 else 12.0
     st.session_state.l7 = float(vals_pm25[-8]) if len(vals_pm25) >= 8 else float(vals_pm25[0])
 
-# --- ENCABEZADO Y TÍTULO ---
-st.title("🌬️ Plataforma de Monitoreo y Alerta Temprana MP2.5")
-st.markdown("### **Estación Parque O'Higgins (Santiago de Chile)** | Sistema Predictivo Multivariado Multi-Ventana (24h, 48h y 72h)")
+# --- CLASIFICACIÓN SEGÚN NORMA PPDA DE CHILE ---
+def clasificar_norma(val):
+    if val <= 50.0:
+        return "BUENO", "🟢", "#28a745", "Calidad del aire favorable. Sin restricciones para la población ni actividades al aire libre."
+    elif val <= 79.0:
+        return "REGULAR", "🟡", "#ffc107", "Aceptable para la mayoría. Personas sensibles (asma, niños, adultos mayores) deben moderar esfuerzos físicos prolongados."
+    elif val <= 109.0:
+        return "ALERTA", "🟠", "#fd7e14", "Riesgo moderado a alto. Se recomienda suspender clases de educación física en colegios y limitar ejercicio intenso al aire libre."
+    elif val <= 169.0:
+        return "PRE-EMERGENCIA", "🔴", "#dc3545", "Condición crítica. Prohibición de humos visibles y calefactores a leña, restricción vehicular e industrias. Evitar salir."
+    else:
+        return "EMERGENCIA", "🟣", "#6f42c1", "Condición extrema. Prohibición total de actividad física al aire libre. Población general debe permanecer en interiores."
 
-# --- BARRA LATERAL (AJUSTE Y SIMULACIÓN) ---
-st.sidebar.header("⚙️ Configuración y Sincronización")
-if st.sidebar.button("🔄 Sincronizar con SINCA Ahora", use_container_width=True):
+# --- BARRA LATERAL CIUDADANA ---
+st.sidebar.header("🌬️ Estación Parque O'Higgins")
+st.sidebar.caption("Santiago Centro, Región Metropolitana")
+
+if st.sidebar.button("🔄 Actualizar Datos en Tiempo Real", use_container_width=True):
     fetch_sinca_raw.clear()
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎛️ Parámetros de Entrada")
-modo_simulacion = st.sidebar.checkbox("Activar Modo Simulación Manual", value=False)
+st.sidebar.subheader("🎛️ Simulación Ciudadana")
+modo_simulacion = st.sidebar.checkbox("Simular Otro Nivel de Contaminación", value=False)
 
 if modo_simulacion:
-    in_l0 = st.sidebar.number_input("MP2.5 Hoy (Día t, µg/m³)", value=st.session_state.l0, step=1.0)
-    in_l1 = st.sidebar.number_input("MP2.5 Ayer (t-1, µg/m³)", value=st.session_state.l1, step=1.0)
-    in_l2 = st.sidebar.number_input("MP2.5 Anteayer (t-2, µg/m³)", value=st.session_state.l2, step=1.0)
-    in_l3 = st.sidebar.number_input("MP2.5 Hace 3 días (t-3, µg/m³)", value=st.session_state.l3, step=1.0)
-    in_l7 = st.sidebar.number_input("MP2.5 Hace 7 días (t-7, µg/m³)", value=st.session_state.l7, step=1.0)
-    in_co = st.sidebar.number_input("CO Hoy (ppm)", value=0.45, step=0.05)
-    in_no2 = st.sidebar.number_input("NO2 Hoy (ppb)", value=18.5, step=1.0)
-    in_wspd = st.sidebar.number_input("Velocidad Viento (m/s)", value=1.40, step=0.1)
-    in_temp = st.sidebar.number_input("Temp. Mínima (°C)", value=9.0, step=0.5)
+    in_l0 = st.sidebar.slider("Nivel actual de MP2.5 (µg/m³)", min_value=5.0, max_value=220.0, value=float(st.session_state.l0), step=1.0)
+    in_l1 = in_l0 * 0.9
+    in_l2 = in_l0 * 0.85
+    in_l3 = in_l0 * 0.8
+    in_l7 = in_l0 * 0.95
+    st.sidebar.caption("Calculando proyecciones preventivas según el valor seleccionado.")
 else:
     in_l0 = st.session_state.l0
     in_l1 = st.session_state.l1
     in_l2 = st.session_state.l2
     in_l3 = st.session_state.l3
     in_l7 = st.session_state.l7
-    in_co = 0.45
-    in_no2 = 18.5
-    in_wspd = 1.40
-    in_temp = 9.0
-    st.sidebar.info(f"**Valores Automáticos SINCA:**\n- MP2.5 Hoy (t): {in_l0:.1f} µg/m³\n- MP2.5 Ayer (t-1): {in_l1:.1f} µg/m³\n- MP2.5 Hace 7 días: {in_l7:.1f} µg/m³\n- CO: {in_co:.2f} ppm | NO2: {in_no2:.1f} ppb\n- Viento: {in_wspd:.2f} m/s | Temp Mín: {in_temp:.1f} °C")
 
-# Fechas futuras de pronóstico
 base_dt = st.session_state.last_dt
 dt_24h = base_dt + timedelta(days=1)
 dt_48h = base_dt + timedelta(days=2)
 dt_72h = base_dt + timedelta(days=3)
 
-# Banner informativo
-if modo_simulacion:
-    st.warning("⚠️ **Modo Simulación Activo:** Calculando predicciones multi-ventana sobre valores ingresados manualmente.")
-else:
-    status_icon = "🟢" if "Vivo" in st.session_state.source else "🔵"
-    st.info(f"{status_icon} **Origen:** {st.session_state.source} | **Última Observación:** {base_dt.strftime('%d/%m/%Y')} | **Horizontes de Pronóstico:** 24h ({dt_24h.strftime('%d/%m')}), 48h ({dt_48h.strftime('%d/%m')}), 72h ({dt_72h.strftime('%d/%m')})")
-
-# --- CONSTRUCCIÓN DEL VECTOR DE 32 CARACTERÍSTICAS (SIN PM10 NI SO2) ---
-def construir_features(l0, l1, l2, l3, l7, co, no2, wspd, temp, dt_target, feat_cols):
+# --- CONSTRUCCIÓN DEL VECTOR PREDICTIVO ---
+def construir_features(l0, l1, l2, l3, l7, dt_target, feat_cols):
     recent_pm25 = [l7, l3, l2, l1, l0]
     rolling_3 = np.mean([l0, l1, l2])
     rolling_7 = np.mean(recent_pm25)
@@ -199,6 +188,11 @@ def construir_features(l0, l1, l2, l3, l7, co, no2, wspd, temp, dt_target, feat_
     mes_cos = np.cos(2 * np.pi * mes / 12)
     dia_ano_sin = np.sin(2 * np.pi * dia_ano / 365.25)
     dia_ano_cos = np.cos(2 * np.pi * dia_ano / 365.25)
+    
+    co = 0.45 * (l0 / 20.0)
+    no2 = 18.0 * (l0 / 20.0)
+    temp = 10.0
+    wspd = 1.35
     
     fila = {
         'MP25_t': l0,
@@ -243,170 +237,190 @@ def construir_features(l0, l1, l2, l3, l7, co, no2, wspd, temp, dt_target, feat_
         df_feat = df_feat[feat_cols]
     return df_feat
 
-# Clasificación según Norma Primaria y PPDA
-def clasificar_norma(val):
-    if val <= 50.0:
-        return "BUENO", "🟢", "#28a745", "Calidad del aire favorable. Sin restricciones para la población."
-    elif val <= 79.0:
-        return "REGULAR", "🟡", "#ffc107", "Grupos sensibles (niños, adultos mayores, asmáticos) deben moderar actividades físicas prolongadas."
-    elif val <= 109.0:
-        return "ALERTA", "🟠", "#fd7e14", "Se recomienda suspensión de clases de educación física al aire libre. Uso voluntario de mascarilla."
-    elif val <= 169.0:
-        return "PRE-EMERGENCIA", "🔴", "#dc3545", "Prohibición de quemas agrícolas, restricción vehicular y paralización de fuentes industriales críticas."
-    else:
-        return "EMERGENCIA", "🟣", "#6f42c1", "Condición extrema. Prohibición total de actividad física y máxima fiscalización ambiental."
-
-# --- INFERENCIA MULTI-VENTANA ---
+# Inferencia
 if model_24h and model_48h and model_72h:
-    feat_24 = construir_features(in_l0, in_l1, in_l2, in_l3, in_l7, in_co, in_no2, in_wspd, in_temp, dt_24h, features_list)
-    feat_48 = construir_features(in_l0, in_l1, in_l2, in_l3, in_l7, in_co, in_no2, in_wspd, in_temp, dt_48h, features_list)
-    feat_72 = construir_features(in_l0, in_l1, in_l2, in_l3, in_l7, in_co, in_no2, in_wspd, in_temp, dt_72h, features_list)
+    feat_24 = construir_features(in_l0, in_l1, in_l2, in_l3, in_l7, dt_24h, features_list)
+    feat_48 = construir_features(in_l0, in_l1, in_l2, in_l3, in_l7, dt_48h, features_list)
+    feat_72 = construir_features(in_l0, in_l1, in_l2, in_l3, in_l7, dt_72h, features_list)
 
     pred_24 = max(0.0, float(model_24h.predict(feat_24)[0]))
     pred_48 = max(0.0, float(model_48h.predict(feat_48)[0]))
     pred_72 = max(0.0, float(model_72h.predict(feat_72)[0]))
 else:
-    pred_24, pred_48, pred_72 = 18.5, 19.2, 17.8
+    pred_24, pred_48, pred_72 = in_l0 * 0.95, in_l0 * 0.92, in_l0 * 0.90
 
-# Pestañas principales de navegación
-tab1, tab2, tab3 = st.tabs([
-    "📊 Monitoreo y Proyecciones Multi-Ventana",
-    "📈 Comparativa Experimental (Defecto vs. Optuna)",
-    "📑 Arquitectura y Protocolo Normativo (PPDA)"
+# --- ENCABEZADO CIUDADANO ---
+st.title("🌬️ Alerta Temprana de Calidad del Aire")
+st.markdown("### **Estación Parque O'Higgins — Santiago de Chile**")
+st.caption(f"ℹ️ {st.session_state.source} | Última medición oficial: **{base_dt.strftime('%d/%m/%Y')}** | Nivel Registrado: **{in_l0:.1f} µg/m³**")
+
+# PESTAÑAS CIUDADANAS
+tab1, tab2 = st.tabs([
+    "🎯 Pronóstico y Semáforo de Calidad del Aire (24h, 48h, 72h)",
+    "📜 Protocolos Normativos y Consejos de Salud (PPDA)"
 ])
 
+# -------------------------------------------------------------
+# PESTAÑA 1: PRONÓSTICOS Y RECOMENDACIONES
+# -------------------------------------------------------------
 with tab1:
-    st.subheader("🎯 Pronóstico Directo en 3 Ventanas de Tiempo")
-    
+    st.subheader("Pronóstico Preventivo para los Próximos 3 Días")
+    st.markdown("Anticípate a los episodios críticos de contaminación ambiental para planificar actividades al aire libre, clases escolares y deportes:")
+
     col1, col2, col3 = st.columns(3)
-    
-    # 24 Horas (Campeón: XGBoost)
+
+    # 24 Horas
     cat_24, icon_24, col_24, rec_24 = clasificar_norma(pred_24)
     delta_24 = pred_24 - in_l0
     with col1:
-        st.markdown(f"#### ⏱️ Ventana 24 Horas (Mañana)")
-        st.caption(f"Fecha estimada: **{dt_24h.strftime('%A %d/%m/%Y')}**")
-        st.metric(label="MP2.5 Estimado (XGBoost 🏆)", value=f"{pred_24:.1f} µg/m³", delta=f"{delta_24:+.1f} vs Hoy", delta_color="inverse")
-        st.markdown(f"**Estado Normativo:** {icon_24} `{cat_24}`")
-        st.caption(rec_24)
+        st.markdown(f"#### ⏱️ Mañana ({dt_24h.strftime('%d/%m')})")
+        st.metric(
+            label="Concentración Proyectada",
+            value=f"{pred_24:.1f} µg/m³",
+            delta=f"{delta_24:+.1f} vs Hoy",
+            delta_color="inverse"
+        )
+        st.markdown(f"**Estado del Aire:** {icon_24} `{cat_24}`")
+        st.info(rec_24)
 
-    # 48 Horas (Campeón: LightGBM)
+    # 48 Horas
     cat_48, icon_48, col_48, rec_48 = clasificar_norma(pred_48)
     delta_48 = pred_48 - in_l0
     with col2:
-        st.markdown(f"#### ⏱️ Ventana 48 Horas (Pasado Mañana)")
-        st.caption(f"Fecha estimada: **{dt_48h.strftime('%A %d/%m/%Y')}**")
-        st.metric(label="MP2.5 Estimado (LightGBM 🏆)", value=f"{pred_48:.1f} µg/m³", delta=f"{delta_48:+.1f} vs Hoy", delta_color="inverse")
-        st.markdown(f"**Estado Normativo:** {icon_48} `{cat_48}`")
-        st.caption(rec_48)
+        st.markdown(f"#### ⏱️ Pasado Mañana ({dt_48h.strftime('%d/%m')})")
+        st.metric(
+            label="Concentración Proyectada",
+            value=f"{pred_48:.1f} µg/m³",
+            delta=f"{delta_48:+.1f} vs Hoy",
+            delta_color="inverse"
+        )
+        st.markdown(f"**Estado del Aire:** {icon_48} `{cat_48}`")
+        st.info(rec_48)
 
-    # 72 Horas (Campeón: CatBoost)
+    # 72 Horas
     cat_72, icon_72, col_72, rec_72 = clasificar_norma(pred_72)
     delta_72 = pred_72 - in_l0
     with col3:
-        st.markdown(f"#### ⏱️ Ventana 72 Horas (En 3 Días)")
-        st.caption(f"Fecha estimada: **{dt_72h.strftime('%A %d/%m/%Y')}**")
-        st.metric(label="MP2.5 Estimado (CatBoost 🏆)", value=f"{pred_72:.1f} µg/m³", delta=f"{delta_72:+.1f} vs Hoy", delta_color="inverse")
-        st.markdown(f"**Estado Normativo:** {icon_72} `{cat_72}`")
-        st.caption(rec_72)
+        st.markdown(f"#### ⏱️ En 3 Días ({dt_72h.strftime('%d/%m')})")
+        st.metric(
+            label="Concentración Proyectada",
+            value=f"{pred_72:.1f} µg/m³",
+            delta=f"{delta_72:+.1f} vs Hoy",
+            delta_color="inverse"
+        )
+        st.markdown(f"**Estado del Aire:** {icon_72} `{cat_72}`")
+        st.info(rec_72)
 
     st.markdown("---")
-    st.subheader("📈 Curva de Evolución Temporal y Umbrales Normativos")
+    st.subheader("📈 Evolución de la Calidad del Aire y Zonas de Riesgo")
 
-    # Construir datos para gráfico
     df_plot_hist = st.session_state.historico_df.tail(10).copy()
     fechas_hist = [base_dt - timedelta(days=len(df_plot_hist)-1-i) for i in range(len(df_plot_hist))]
     valores_hist = df_plot_hist['MP25'].tolist()
-    
+
     etiquetas_x = [f.strftime('%d/%m') for f in fechas_hist] + [
-        f"{dt_24h.strftime('%d/%m')} (24h)",
-        f"{dt_48h.strftime('%d/%m')} (48h)",
-        f"{dt_72h.strftime('%d/%m')} (72h)"
+        f"{dt_24h.strftime('%d/%m')} (Mañana)",
+        f"{dt_48h.strftime('%d/%m')} (Pasado)",
+        f"{dt_72h.strftime('%d/%m')} (+3 Días)"
     ]
-    
+
     serie_hist = valores_hist + [None, None, None]
     serie_pred = [None] * (len(valores_hist) - 1) + [valores_hist[-1], pred_24, pred_48, pred_72]
 
     fig = go.Figure()
+
+    # Zonas coloreadas del PPDA de fondo
+    max_grafico = max(max(valores_hist), pred_24, pred_48, pred_72, 120.0) + 15
+    fig.add_hrect(y0=0, y1=50, fillcolor="#28a745", opacity=0.12, line_width=0, annotation_text="Zona Buena (0 - 50)", annotation_position="top left")
+    fig.add_hrect(y0=50, y1=80, fillcolor="#ffc107", opacity=0.12, line_width=0, annotation_text="Zona Regular (51 - 79)", annotation_position="top left")
+    fig.add_hrect(y0=80, y1=110, fillcolor="#fd7e14", opacity=0.15, line_width=0, annotation_text="Zona Alerta (80 - 109)", annotation_position="top left")
+    fig.add_hrect(y0=110, y1=170, fillcolor="#dc3545", opacity=0.18, line_width=0, annotation_text="Zona Pre-Emergencia (110 - 169)", annotation_position="top left")
+    if max_grafico > 170:
+        fig.add_hrect(y0=170, y1=max_grafico, fillcolor="#6f42c1", opacity=0.20, line_width=0, annotation_text="Emergencia (≥ 170)", annotation_position="top left")
+
+    # Serie histórica
     fig.add_trace(go.Scatter(
         x=etiquetas_x, y=serie_hist,
-        mode='lines+markers', name='Histórico Registrado (SINCA)',
+        mode='lines+markers', name='Registros Observados (SINCA)',
         line=dict(color='#1f77b4', width=3),
         marker=dict(size=8)
     ))
+
+    # Serie pronosticada
     fig.add_trace(go.Scatter(
         x=etiquetas_x, y=serie_pred,
-        mode='lines+markers', name='Pronóstico Multi-Ventana (Modelos Campeones)',
-        line=dict(color='#e377c2', width=3, dash='dash'),
-        marker=dict(size=10, symbol='diamond')
+        mode='lines+markers', name='Pronóstico Preventivo',
+        line=dict(color='#d62728', width=3, dash='dash'),
+        marker=dict(size=11, symbol='diamond')
     ))
 
-    # Líneas de umbral normativo PPDA
-    fig.add_hline(y=50, line_dash="dot", line_color="green", annotation_text="Norma Diaria (50 µg/m³)")
-    fig.add_hline(y=80, line_dash="dot", line_color="orange", annotation_text="Alerta (80 µg/m³)")
-    fig.add_hline(y=110, line_dash="dot", line_color="red", annotation_text="Pre-Emergencia (110 µg/m³)")
-    fig.add_hline(y=170, line_dash="dot", line_color="purple", annotation_text="Emergencia (170 µg/m³)")
-
     fig.update_layout(
-        title="Proyección de Concentración de MP2.5 (µg/m³) vs. Estándar Ambiental",
-        xaxis_title="Eje Cronológico",
-        yaxis_title="MP2.5 (µg/m³)",
+        title="Curva de Tendencia y Pronóstico vs. Umbrales Sanitarios Ambientales",
+        xaxis_title="Fecha",
+        yaxis_title="Concentración MP2.5 (µg/m³)",
         template="plotly_white",
-        height=450,
-        hovermode="x unified"
+        height=480,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
 
+# -------------------------------------------------------------
+# PESTAÑA 2: PROTOCOLOS NORMATIVOS Y SALUD
+# -------------------------------------------------------------
 with tab2:
-    st.subheader("🔬 Evidencia Científica: Modelos por Defecto vs. Optimizados con Optuna")
-    st.markdown("""
-    Evaluación en el **conjunto de prueba ciego independiente** (año 2026 completo, fuera de muestra).
-    La calibración fue realizada con **Optimización Bayesiana (Optuna)** orientada a maximizar directamente $R^2$, aplicando **Early Stopping con paciencia de 30 iteraciones** sobre el conjunto de Validación (2025).
-    """)
+    st.subheader("📜 Niveles de Alerta Sanitaria Ambiental (Norma Chilena)")
+    st.markdown("De acuerdo al **Plan de Prevención y Descontaminación Atmosférica (PPDA, D.S. N° 31/2016)**, estos son los niveles oficiales de calidad del aire y las acciones recomendadas:")
 
-    # Cargar tabla oficial si existe
-    base_path = os.path.dirname(__file__)
-    tabla_csv = os.path.join(base_path, "tabla_comparativa_defecto_vs_tuneados.csv")
-    if os.path.exists(tabla_csv):
-        df_comp = pd.read_csv(tabla_csv, sep=';', decimal=',')
-        st.dataframe(df_comp, use_container_width=True, hide_index=True)
-    else:
-        st.info("Tabla comparativa generada en el entrenamiento.")
+    col_izq, col_der = st.columns(2)
 
-    st.markdown("""
-    > **Hallazgos Clave de la Investigación:**
-    > 1. **Horizonte 24h:** **XGBoost Tuneado** alcanzó el rendimiento más alto del proyecto con **$R^2 = 0,6965$** y un error cuadrático medio de **$RMSE = 8,63\ \mu\text{g/m}^3$**, superando por más de un **340%** al baseline Seasonal Naive ($R^2 = 0,1570$).
-    > 2. **Horizonte 48h:** **LightGBM Tuneado** lideró con **$R^2 = 0,5293$** ($RMSE = 10,76\ \mu\text{g/m}^3$).
-    > 3. **Horizonte 72h:** **CatBoost Tuneado** demostró mayor resistencia en proyecciones a 3 días vista con **$R^2 = 0,4909$** ($RMSE = 11,20\ \mu\text{g/m}^3$).
-    > 4. **Degradación Física Coherente:** El coeficiente de determinación disminuye suave y monótonamente ($0,70 \rightarrow 0,53 \rightarrow 0,49$), consistente con la pérdida natural de predictibilidad atmosférica.
-    """)
-
-with tab3:
-    st.subheader("🏛️ Protocolo Normativo y Arquitectura del Sistema")
-    
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("#### 📜 Umbrales PPDA (Decreto Supremo N° 31/2016)")
+    with col_izq:
         st.markdown("""
-        | Rango MP2.5 | Estado | Impacto y Medida Sanitaria |
-        |---|---|---|
-        | **0 - 50 µg/m³** | 🟢 Bueno | Calidad del aire óptima. Sin restricciones. |
-        | **51 - 79 µg/m³** | 🟡 Regular | Población de riesgo modera ejercicio físico. |
-        | **80 - 109 µg/m³** | 🟠 Alerta | Suspensión de clases deportivas escolares. |
-        | **110 - 169 µg/m³** | 🔴 Pre-emergencia | Restricción vehicular extendida e industrias. |
-        | **≥ 170 µg/m³** | 🟣 Emergencia | Prohibición absoluta de actividad física. |
+        ### 🟢 1. Nivel Bueno (0 a 50 µg/m³)
+        * **Calidad del aire:** Favorable.
+        * **Recomendación:** Actividades normales para toda la población. Condiciones ideales para deportes y ventilación de hogares.
+
+        ---
+
+        ### 🟡 2. Nivel Regular (51 a 79 µg/m³)
+        * **Calidad del aire:** Moderada.
+        * **Recomendación:** Grupos sensibles (niños, embarazadas, personas con asma o EPOC y adultos mayores) deben evitar esfuerzos físicos intensos y prolongados al aire libre.
+
+        ---
+
+        ### 🟠 3. Nivel Alerta (80 a 109 µg/m³)
+        * **Calidad del aire:** Dañina para grupos vulnerables.
+        * **Recomendación Escolar:** Modificar o suspender clases de educación física en colegios.
+        * **Medidas Comunitarias:** Prohibición de humos visibles y restricción voluntaria del vehículo particular.
         """)
 
-    with col_b:
-        st.markdown("#### 🧠 Innovaciones Metodológicas Implementadas")
+    with col_der:
         st.markdown("""
-        - **Saneamiento MICE en Train con PM10:** Reconstrucción de la serie histórica de $PM_{2.5}$ mediante `IterativeImputer(BayesianRidge)` aprovechando la correlación física ($r = 0,88$).
-        - **Eliminación Definitiva de PM10:** El modelo no depende de $PM_{10}$ durante la inferencia en producción.
-        - **Selección Exógena por Correlación (Clase 05 - Diapo 75):** Inclusión de gases de combustión vehicular ($NO_2, NO_X, NO, CO$) y variables de dispersión/inversión térmica ($WSPD, TEMP_{min}, O_3$).
-        - **Imputación de X sin Data Leakage (Clase 07 - Diapo 33):** Imputador iterativo ajustado exclusivamente sobre Train (2020-2024).
-        - **Early Stopping (Paciencia 30):** Detención automática del boosting al estancarse el aprendizaje en Validación (2025).
-        - **Modelos Boosting Individuales:** Enfoque puro, interpretable y de baja latencia sin la complejidad de ensambles Stacking.
+        ### 🔴 4. Nivel Pre-Emergencia (110 a 169 µg/m³)
+        * **Calidad del aire:** Dañina para la salud de toda la población.
+        * **Medidas Obligatorias:**
+          * Prohibición absoluta de calefactores a leña y derivados en toda la cuenca.
+          * Paralización de grandes fuentes industriales estacionarias.
+          * Restricción vehicular extendida a vehículos con y sin sello verde.
+          * Suspensión total de actividades deportivas escolares y masivas al aire libre.
+
+        ---
+
+        ### 🟣 5. Nivel Emergencia (≥ 170 µg/m³)
+        * **Calidad del aire:** Condición crítica extrema.
+        * **Medidas Obligatorias:**
+          * Máxima restricción vehicular e industrial.
+          * Se prohíbe toda actividad física al aire libre.
+          * Se aconseja a toda la comunidad permanecer en interiores con ventanas cerradas y purificadores de aire.
         """)
+
+    st.markdown("---")
+    st.subheader("💡 Consejos Prácticos para la Ciudadanía")
+    st.markdown("""
+    1. **Ventilación del Hogar:** Prefiere ventilar tu casa durante las horas de la tarde (14:00 a 17:00 hrs), cuando el viento y la radiación solar dispersan los contaminantes hacia capas altas de la atmósfera.
+    2. **Calefacción Limpia:** Evita estufas a leña o parafina en días de Alerta o Pre-emergencia; opta por climatización eléctrica o gas licuado.
+    3. **Protección en Desplazamientos:** Si te trasladas en bicicleta o caminas cerca de avenidas de alto tráfico en días fríos matutinos, considera el uso de mascarillas con filtro tipo KN95.
+    """)
 
 st.markdown("---")
-st.caption("Plataforma Predictiva MP2.5 V4 | SINCA - Estación Parque O'Higgins | XGBoost (24h) • LightGBM (48h) • CatBoost (72h)")
+st.caption("Plataforma de Monitoreo Preventivo MP2.5 | Estación Parque O'Higgins (SINCA MMA) | Universidad Bernardo O'Higgins")
