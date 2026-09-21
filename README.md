@@ -1,6 +1,6 @@
 # 🌬️ Plataforma de Monitoreo y Alerta Temprana MP2.5 - Estación Parque O'Higgins
 
-**Versión V4 (Boosting Multivariado):** Sistema predictivo multi-ventana (**24h, 48h y 72h**) de la concentración diaria de Material Particulado Fino ($PM_{2.5}$) en la estación Parque O'Higgins (Santiago de Chile, SINCA D14/273). Impulsado por modelos individuales de Gradient Boosting (**LightGBM, XGBoost, CatBoost**) calibrados mediante **Optimización Bayesiana (Optuna)** con **Early Stopping (paciencia = 30)** sobre validación anual (2025) y sincronizados con la red oficial del **SINCA** (Ministerio del Medio Ambiente).
+**Versión V4 (Boosting Multivariado & Alerta Ciudadana):** Sistema predictivo multi-ventana (**24h, 48h y 72h**) de la concentración diaria de Material Particulado Fino ($PM_{2.5}$) en la estación Parque O'Higgins (Santiago de Chile, SINCA D14/273). Impulsado por modelos individuales de Gradient Boosting (**LightGBM, XGBoost, CatBoost**) calibrados mediante **Optimización Bayesiana (Optuna)** con **Early Stopping (paciencia = 30)** sobre validación anual (2025) y sincronizados con la red oficial del **SINCA** (Ministerio del Medio Ambiente).
 
 ## 🚀 Acceso a la Demo en Vivo
 Puedes acceder a la plataforma interactiva desplegada en Streamlit Cloud aquí:  
@@ -19,6 +19,7 @@ Puedes acceder a la plataforma interactiva desplegada en Streamlit Cloud aquí:
    * **Validation:** Año 2025 completo (365 días), utilizado para detener el boosting si pasan 30 iteraciones consecutivas sin mejora en $R^2$.
    * **Test:** Año 2026 a la fecha actual (263 días), evaluado **estrictamente contra mediciones reales del sensor SINCA**.
 6. **Rendimiento Máximo Alcanzado:** El modelo campeón a 24 horas (**XGBoost Tuneado**) alcanzó **$R^2 = 0,6965$** y un error **$RMSE = 8,63\ \mu\text{g/m}^3$**, superando en más de un **340%** la persistencia estacional del Baseline Seasonal Naive ($R^2 = 0,1570$).
+7. **Rediseño Ciudadano de la Aplicación:** Interfaz visual orientada a la salud comunitaria, con semáforos de alerta a 3 días vista, bandas de riesgo normativo en Plotly y protocolos oficiales del **Plan de Prevención y Descontaminación Atmosférica (PPDA, D.S. N° 31/2016)** para colegios, industrias y tránsito vehicular.
 
 ---
 
@@ -27,22 +28,23 @@ Puedes acceder a la plataforma interactiva desplegada en Streamlit Cloud aquí:
 ```text
 PM2.5/
 ├── .gitignore
-├── README.md                                  <- Documentación general V4
+├── README.md                                  <- Documentación técnica del repositorio (este archivo)
 └── Aplicacion/
     ├── Entrenamiento/                         <- Pipeline de modelado secuencial y reproducible
     │   ├── 01_extraccion_datos_sinca.py       <- Descarga multivariada automática desde CGI SINCA
     │   ├── 02_saneamiento_mice_y_correlacion.py <- MICE en Train, retiro de PM10, correlación e imputación de X
     │   ├── 03_evaluar_y_optimizar_modelos.py  <- Baseline SNaive, Boosting defecto y Optuna con Early Stopping
     │   ├── ejecutar_pipeline_completo.py      <- Orquestador maestro para correr todo con 1 comando
-    │   ├── README.md                          <- Guía técnica de la fase de entrenamiento
+    │   ├── README.md                          <- Guía técnica detallada de entrenamiento
+    │   ├── optuna_estudio.db                  <- SQLite con historial de trials
     │   ├── tabla_comparativa_defecto_vs_tuneados.csv <- Métricas oficiales consolidadas
     │   ├── datos/                             <- Datasets sinópticos y particiones Train/Val/Test
     │   └── modelos/                           <- Modelos serializados .joblib
     └── App/                                   <- Aplicación Streamlit en producción
-        ├── app.py                             <- Interfaz interactiva V4 multi-ventana (24h, 48h, 72h)
+        ├── app.py                             <- Dashboard ciudadano (semáforos 24h/48h/72h y protocolos PPDA)
         ├── requirements.txt                   <- Dependencias de producción
         ├── datos_respaldo.csv                 <- Respaldo local multivariado reciente (tolerancia a fallos)
-        ├── tabla_comparativa_defecto_vs_tuneados.csv <- Tabla de métricas embebida en la app
+        ├── tabla_comparativa_defecto_vs_tuneados.csv <- Matriz de métricas para consulta interna
         └── modelos/                           <- Modelos campeones cargados por la app
             ├── features_list.joblib           <- Vector de 32 variables de entrada
             ├── modelo_final_mp25_tuneado_24h.joblib <- Campeón 24h: XGBoost (R² = 0.6965)
@@ -84,11 +86,22 @@ Evaluación en el conjunto de prueba independiente (263 días reales del año 20
 
 ---
 
-## ⚡ Ejecución Rápida del Pipeline
+## ⚡ Guía de Ejecución
 
+### 1. Iniciar la Aplicación Web (Streamlit)
+```bash
+cd Aplicacion/App
+streamlit run app.py
+```
+
+### 2. Ejecutar el Pipeline de Entrenamiento Completo
 ```bash
 cd Aplicacion/Entrenamiento
-
-# Ejecutar el pipeline completo de inicio a fin:
 python ejecutar_pipeline_completo.py --trials 40
 ```
+
+---
+
+## 🌿 Ramas de Git
+* **`master`:** Rama productiva y oficial. Contiene la última versión validada y en producción de la app.
+* **`V4-Boosting-Multivariado`:** Rama de desarrollo donde se implementó la arquitectura Boosting pura (sin Stacking), MICE y selección multivariada.
