@@ -4,7 +4,7 @@
 
 ## 🚀 Acceso a la Demo en Vivo
 Puedes acceder a la plataforma interactiva desplegada en Streamlit Cloud aquí:  
-👉 **[https://pm25-prediccion-del-aire.streamlit.app/](https://pm25-prediccion-del-aire.streamlit.app/)**
+👉 **[https://pm25-prediccion-del-aire.streamlit.app/]([https://pm25-prediccion-del-aire.streamlit.app](https://prediccion-mp25.streamlit.app/))**
 
 ---
 
