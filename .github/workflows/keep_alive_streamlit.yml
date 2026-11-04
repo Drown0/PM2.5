@@ -1,0 +1,18 @@
+name: Keep-Alive Streamlit Cloud (Despierto 24/7)
+
+on:
+  schedule:
+    # Se ejecuta periódicamente para evitar el modo sleep por inactividad de Streamlit Cloud
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Permite ejecución manual desde la pestaña Actions en GitHub
+
+jobs:
+  ping-streamlit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping a las URLs de Streamlit Cloud
+        run: |
+          echo "Haciendo ping a las URLs de producción..."
+          curl -s -o /dev/null -w "URL 1 - Status: %{http_code}\n" https://prediccion-mp25.streamlit.app/ || true
+          curl -s -o /dev/null -w "URL 2 - Status: %{http_code}\n" https://pm25-prediccion-del-aire.streamlit.app/ || true
+          echo "Keep-alive completado exitosamente."
