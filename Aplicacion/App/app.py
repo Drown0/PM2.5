@@ -59,11 +59,14 @@ model_24h, model_48h, model_72h, features_list = load_resources()
 def fetch_sinca_raw():
     today = datetime.now()
     today_str = today.strftime('%y%m%d')
-    from_date = (today - timedelta(days=45)).strftime('%y%m%d')
+    from_date = (today - timedelta(days=60)).strftime('%y%m%d')
     url_base = f"https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?outtype=xcl&from={from_date}&to={today_str}&path=/usr/airviro/data/CONAMA/&lang=esp&rsrc=&macropath=&macro=./RM/D14/Cal/PM25//PM25.diario.diario.ic"
 
     try:
-        r = requests.get(url_base, verify=False, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        r = requests.get(url_base, verify=False, timeout=15, headers=headers)
         if r.status_code == 200 and "FECHA" in r.text:
             return r.text
     except Exception:
@@ -74,40 +77,52 @@ def get_hybrid_data():
     base_path = os.path.dirname(__file__)
     local_file = os.path.join(base_path, "datos_respaldo.csv")
 
-    # 1. Respaldo local
-    if os.path.exists(local_file):
-        try:
-            df_local = pd.read_csv(local_file, sep=';', decimal=',')
-            if 'Fecha' in df_local.columns:
-                df_local['Fecha'] = pd.to_datetime(df_local['Fecha'])
-                df_local = df_local.sort_values('Fecha').reset_index(drop=True)
-                last_dt = df_local.iloc[-1]['Fecha']
-                return df_local, "Sistema de Monitoreo SINCA (Sincronizado)", last_dt
-        except Exception:
-            pass
-
-    # 2. En vivo SINCA
+    # 1. En Vivo desde SINCA (PRIORIDAD PRINCIPAL: Siempre intenta descargar los datos más recientes)
     try:
         csv_pm25 = fetch_sinca_raw()
         if csv_pm25:
-            df25 = pd.read_csv(io.StringIO(csv_pm25), sep=';', decimal=',', na_values=['', ' ', 'NaN'], dtype={'FECHA (YYMMDD)': str})
+            df25 = pd.read_csv(
+                io.StringIO(csv_pm25),
+                sep=';',
+                decimal=',',
+                na_values=['', ' ', 'NaN'],
+                dtype={'FECHA (YYMMDD)': str}
+            )
             df25.columns = [c.strip() for c in df25.columns]
-            col_val, col_pre, col_no_val = 'Registros validados', 'Registros preliminares', 'Registros no validados'
+            col_val = 'Registros validados'
+            col_pre = 'Registros preliminares'
+            col_no_val = 'Registros no validados'
+            
             df25['MP25'] = df25[col_val].fillna(df25.get(col_pre, np.nan)).fillna(df25.get(col_no_val, np.nan))
             df25 = df25.dropna(subset=['MP25'])
             df25['FECHA_STR'] = df25['FECHA (YYMMDD)'].astype(str).str.split('.').str[0].str.zfill(6)
             df25['Fecha'] = pd.to_datetime('20' + df25['FECHA_STR'], format='%Y%m%d', errors='coerce')
-            df25 = df25.sort_values('Fecha').reset_index(drop=True).tail(30)
-            last_dt = df25.iloc[-1]['Fecha']
-            return df25, "En Vivo (Red Oficial SINCA - MMA)", last_dt
+            df25 = df25.dropna(subset=['Fecha']).sort_values('Fecha').reset_index(drop=True)
+            
+            if len(df25) >= 8:
+                last_dt = df25.iloc[-1]['Fecha']
+                return df25, "En Vivo (Red Oficial SINCA - MMA)", last_dt
     except Exception:
         pass
 
-    # 3. Fallback
+    # 2. Respaldo Local (CONTINGENCIA OFFLINE: Solo si la API de SINCA se cae o no hay red)
+    if os.path.exists(local_file):
+        try:
+            df_local = pd.read_csv(local_file, sep=';', decimal=',')
+            if 'Fecha' in df_local.columns and 'MP25' in df_local.columns:
+                df_local['Fecha'] = pd.to_datetime(df_local['Fecha'])
+                df_local = df_local.dropna(subset=['Fecha', 'MP25']).sort_values('Fecha').reset_index(drop=True)
+                if len(df_local) >= 8:
+                    last_dt = df_local.iloc[-1]['Fecha']
+                    return df_local, "Modo Contingencia Offline (Respaldo Local)", last_dt
+        except Exception:
+            pass
+
+    # 3. Fallback Sintético de Emergencia
     fechas = [datetime.now() - timedelta(days=i) for i in reversed(range(15))]
     vals25 = [14.0, 18.0, 15.0, 22.0, 29.0, 25.0, 19.0, 15.0, 12.0, 18.0, 14.0, 11.0, 16.0, 20.0, 18.0]
     df_def = pd.DataFrame({'Fecha': fechas, 'MP25': vals25})
-    return df_def, "Respaldo Local de Contingencia", datetime.now() - timedelta(days=1)
+    return df_def, "Modo Simulación de Emergencia", datetime.now() - timedelta(days=1)
 
 # --- ESTADO DE SESIÓN ---
 if 'historico_df' not in st.session_state:
@@ -315,7 +330,7 @@ with tab1:
     st.subheader("📈 Evolución de la Calidad del Aire y Zonas de Riesgo")
 
     df_plot_hist = st.session_state.historico_df.tail(10).copy()
-    fechas_hist = [base_dt - timedelta(days=len(df_plot_hist)-1-i) for i in range(len(df_plot_hist))]
+    fechas_hist = df_plot_hist['Fecha'].tolist()
     valores_hist = df_plot_hist['MP25'].tolist()
 
     etiquetas_x = [f.strftime('%d/%m') for f in fechas_hist] + [
