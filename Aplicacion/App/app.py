@@ -55,66 +55,145 @@ def load_resources():
 model_24h, model_48h, model_72h, features_list = load_resources()
 
 # --- INGESTA EN VIVO / RESPALDO LOCAL ---
-@st.cache_data(ttl=1800)
-def fetch_sinca_raw():
+def fetch_sinca_data_live():
     today = datetime.now()
     today_str = today.strftime('%y%m%d')
-    from_date = (today - timedelta(days=60)).strftime('%y%m%d')
-    url_base = f"https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?outtype=xcl&from={from_date}&to={today_str}&path=/usr/airviro/data/CONAMA/&lang=esp&rsrc=&macropath=&macro=./RM/D14/Cal/PM25//PM25.diario.diario.ic"
+    from_daily = (today - timedelta(days=60)).strftime('%y%m%d')
+    from_hourly = (today - timedelta(days=3)).strftime('%y%m%d')
 
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    url_daily = (
+        "https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?"
+        f"outtype=xcl&from={from_daily}&to={today_str}&"
+        "path=/usr/airviro/data/CONAMA/&lang=esp&rsrc=&macropath=&"
+        "macro=./RM/D14/Cal/PM25//PM25.diario.diario.ic"
+    )
+    url_hourly = (
+        "https://sinca.mma.gob.cl/cgi-bin/APUB-MMA/apub.tsindico2.cgi?"
+        f"outtype=xcl&from={from_hourly}&to={today_str}&"
+        "path=/usr/airviro/data/CONAMA/&lang=esp&rsrc=&macropath=&"
+        "macro=./RM/D14/Cal/PM25//PM25.horario.horario.ic"
+    )
+
+    # 1. Descarga de serie histórica diaria consolidada
+    r_daily = requests.get(url_daily, verify=False, timeout=15, headers=headers)
+    if r_daily.status_code != 200 or "FECHA" not in r_daily.text:
+        raise ConnectionError(f"No fue posible consultar la serie diaria de SINCA (Status: {r_daily.status_code})")
+
+    df25 = pd.read_csv(
+        io.StringIO(r_daily.text),
+        sep=';',
+        decimal=',',
+        na_values=['', ' ', 'NaN', '--'],
+        dtype={'FECHA (YYMMDD)': str}
+    )
+    df25.columns = [c.strip() for c in df25.columns]
+    col_val = 'Registros validados'
+    col_pre = 'Registros preliminares'
+    col_no_val = 'Registros no validados'
+
+    df25['MP25'] = df25[col_val].fillna(df25.get(col_pre, np.nan)).fillna(df25.get(col_no_val, np.nan))
+    df25['MP25'] = pd.to_numeric(df25['MP25'].astype(str).str.replace(',', '.'), errors='coerce')
+    df25 = df25.dropna(subset=['MP25'])
+    df25['FECHA_STR'] = df25['FECHA (YYMMDD)'].astype(str).str.split('.').str[0].str.zfill(6)
+    df25['Fecha'] = pd.to_datetime('20' + df25['FECHA_STR'], format='%Y%m%d', errors='coerce')
+    df25 = df25.dropna(subset=['Fecha']).sort_values('Fecha').reset_index(drop=True)
+
+    if len(df25) < 8:
+        raise ValueError("Serie diaria de SINCA incompleta (< 8 registros)")
+
+    last_hora = None
+    # 2. Descarga horaria en tiempo real para incorporar la medición de hoy
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        r = requests.get(url_base, verify=False, timeout=15, headers=headers)
-        if r.status_code == 200 and "FECHA" in r.text:
-            return r.text
+        r_hourly = requests.get(url_hourly, verify=False, timeout=12, headers=headers)
+        if r_hourly.status_code == 200 and "FECHA" in r_hourly.text:
+            lines = [l for l in r_hourly.text.splitlines() if l.strip()]
+            df_h = pd.read_csv(
+                io.StringIO('\n'.join(lines)),
+                sep=';',
+                decimal=',',
+                na_values=['', ' ', 'NaN', '--'],
+                dtype={'FECHA (YYMMDD)': str, 'HORA (HHMM)': str}
+            )
+            df_h.columns = [c.strip() for c in df_h.columns]
+            df_h['VALOR'] = df_h[col_val].fillna(df_h.get(col_pre, np.nan)).fillna(df_h.get(col_no_val, np.nan))
+            df_h['VALOR'] = pd.to_numeric(df_h['VALOR'].astype(str).str.replace(',', '.'), errors='coerce')
+            df_h = df_h.dropna(subset=['VALOR'])
+            df_h['FECHA_STR'] = df_h['FECHA (YYMMDD)'].astype(str).str.split('.').str[0].str.zfill(6)
+            df_h['HORA_STR'] = df_h['HORA (HHMM)'].astype(str).str.split('.').str[0].str.zfill(4)
+            df_h['Fecha_dt'] = pd.to_datetime('20' + df_h['FECHA_STR'], format='%Y%m%d', errors='coerce')
+
+            last_daily_date = df25['Fecha'].max()
+            hourly_after = df_h[df_h['Fecha_dt'] > last_daily_date]
+
+            if not hourly_after.empty:
+                today_hours = hourly_after[hourly_after['Fecha_dt'] == pd.to_datetime(today.date())]
+                target_hours = today_hours if not today_hours.empty else hourly_after
+
+                target_date = target_hours['Fecha_dt'].iloc[-1]
+                latest_reading = float(target_hours['VALOR'].iloc[-1])
+                last_hora = target_hours['HORA_STR'].iloc[-1][:2] + ':00 hrs'
+
+                new_row = pd.DataFrame([{
+                    'Fecha': target_date,
+                    'MP25': latest_reading,
+                    'FECHA_STR': target_date.strftime('%y%m%d')
+                }])
+                df25 = pd.concat([df25, new_row], ignore_index=True)
     except Exception:
         pass
-    return None
 
-def get_hybrid_data():
+    df25 = df25.sort_values('Fecha').reset_index(drop=True)
+    last_dt = df25.iloc[-1]['Fecha']
+    return df25, "En Vivo (Red Oficial SINCA - MMA)", last_dt, last_hora
+
+@st.cache_data(ttl=900)
+def fetch_sinca_data_cached():
+    return fetch_sinca_data_live()
+
+def get_hybrid_data(force_refresh=False):
     base_path = os.path.dirname(__file__)
     local_file = os.path.join(base_path, "datos_respaldo.csv")
 
-    # 1. En Vivo desde SINCA (PRIORIDAD PRINCIPAL: Siempre intenta descargar los datos más recientes)
+    # 1. En Vivo desde SINCA
     try:
-        csv_pm25 = fetch_sinca_raw()
-        if csv_pm25:
-            df25 = pd.read_csv(
-                io.StringIO(csv_pm25),
-                sep=';',
-                decimal=',',
-                na_values=['', ' ', 'NaN'],
-                dtype={'FECHA (YYMMDD)': str}
-            )
-            df25.columns = [c.strip() for c in df25.columns]
-            col_val = 'Registros validados'
-            col_pre = 'Registros preliminares'
-            col_no_val = 'Registros no validados'
-            
-            df25['MP25'] = df25[col_val].fillna(df25.get(col_pre, np.nan)).fillna(df25.get(col_no_val, np.nan))
-            df25 = df25.dropna(subset=['MP25'])
-            df25['FECHA_STR'] = df25['FECHA (YYMMDD)'].astype(str).str.split('.').str[0].str.zfill(6)
-            df25['Fecha'] = pd.to_datetime('20' + df25['FECHA_STR'], format='%Y%m%d', errors='coerce')
-            df25 = df25.dropna(subset=['Fecha']).sort_values('Fecha').reset_index(drop=True)
-            
-            if len(df25) >= 8:
-                last_dt = df25.iloc[-1]['Fecha']
-                return df25, "En Vivo (Red Oficial SINCA - MMA)", last_dt
+        if force_refresh:
+            st.cache_data.clear()
+            df25, source, last_dt, last_hora = fetch_sinca_data_live()
+        else:
+            df25, source, last_dt, last_hora = fetch_sinca_data_cached()
+
+        # Actualizar automáticamente archivo de respaldo local en disco para resiliencia
+        try:
+            if os.path.exists(local_file):
+                df_old = pd.read_csv(local_file, sep=';', decimal=',')
+                df_old['Fecha'] = pd.to_datetime(df_old['Fecha'])
+                df_merged = pd.concat([df_old[~df_old['Fecha'].isin(df25['Fecha'])], df25], ignore_index=True)
+                df_merged = df_merged.sort_values('Fecha').reset_index(drop=True)
+                df_merged.to_csv(local_file, sep=';', decimal=',', index=False)
+            else:
+                df25.to_csv(local_file, sep=';', decimal=',', index=False)
+        except Exception:
+            pass
+
+        return df25, source, last_dt, last_hora
     except Exception:
         pass
 
-    # 2. Respaldo Local (CONTINGENCIA OFFLINE: Solo si la API de SINCA se cae o no hay red)
+    # 2. Respaldo Local (Contingencia Offline)
     if os.path.exists(local_file):
         try:
             df_local = pd.read_csv(local_file, sep=';', decimal=',')
             if 'Fecha' in df_local.columns and 'MP25' in df_local.columns:
                 df_local['Fecha'] = pd.to_datetime(df_local['Fecha'])
+                df_local['MP25'] = pd.to_numeric(df_local['MP25'].astype(str).str.replace(',', '.'), errors='coerce')
                 df_local = df_local.dropna(subset=['Fecha', 'MP25']).sort_values('Fecha').reset_index(drop=True)
                 if len(df_local) >= 8:
                     last_dt = df_local.iloc[-1]['Fecha']
-                    return df_local, "Modo Contingencia Offline (Respaldo Local)", last_dt
+                    return df_local, "Modo Contingencia Offline (Respaldo Local)", last_dt, None
         except Exception:
             pass
 
@@ -122,15 +201,17 @@ def get_hybrid_data():
     fechas = [datetime.now() - timedelta(days=i) for i in reversed(range(15))]
     vals25 = [14.0, 18.0, 15.0, 22.0, 29.0, 25.0, 19.0, 15.0, 12.0, 18.0, 14.0, 11.0, 16.0, 20.0, 18.0]
     df_def = pd.DataFrame({'Fecha': fechas, 'MP25': vals25})
-    return df_def, "Modo Simulación de Emergencia", datetime.now() - timedelta(days=1)
+    return df_def, "Modo Simulación de Emergencia", datetime.now() - timedelta(days=1), None
 
 # --- ESTADO DE SESIÓN ---
 if 'historico_df' not in st.session_state:
-    df_hist, source, last_dt = get_hybrid_data()
+    df_hist, source, last_dt, last_hora = get_hybrid_data(force_refresh=False)
     st.session_state.historico_df = df_hist
     st.session_state.source = source
     st.session_state.last_dt = last_dt
-    
+    st.session_state.last_hora = last_hora
+    st.session_state.last_sync = datetime.now().strftime("%H:%M:%S")
+
     vals_pm25 = df_hist['MP25'].dropna().tolist()
     st.session_state.l0 = float(vals_pm25[-1]) if len(vals_pm25) >= 1 else 18.0
     st.session_state.l1 = float(vals_pm25[-2]) if len(vals_pm25) >= 2 else 15.0
@@ -156,10 +237,39 @@ st.sidebar.header("🌬️ Estación Parque O'Higgins")
 st.sidebar.caption("Santiago Centro, Región Metropolitana")
 
 if st.sidebar.button("🔄 Actualizar Datos en Tiempo Real", use_container_width=True):
-    fetch_sinca_raw.clear()
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
+    with st.spinner("⏳ Conectando con los sensores del SINCA (MMA) en Parque O'Higgins..."):
+        df_hist, source, last_dt, last_hora = get_hybrid_data(force_refresh=True)
+        st.session_state.historico_df = df_hist
+        st.session_state.source = source
+        st.session_state.last_dt = last_dt
+        st.session_state.last_hora = last_hora
+        st.session_state.last_sync = datetime.now().strftime("%H:%M:%S")
+
+        vals_pm25 = df_hist['MP25'].dropna().tolist()
+        st.session_state.l0 = float(vals_pm25[-1]) if len(vals_pm25) >= 1 else 18.0
+        st.session_state.l1 = float(vals_pm25[-2]) if len(vals_pm25) >= 2 else 15.0
+        st.session_state.l2 = float(vals_pm25[-3]) if len(vals_pm25) >= 3 else 14.0
+        st.session_state.l3 = float(vals_pm25[-4]) if len(vals_pm25) >= 4 else 12.0
+        st.session_state.l7 = float(vals_pm25[-8]) if len(vals_pm25) >= 8 else float(vals_pm25[0])
+
+        if "SINCA" in source:
+            st.session_state.sync_status = "success"
+        else:
+            st.session_state.sync_status = "warning"
+
     st.rerun()
+
+# Feedback de sincronización en tiempo real
+if st.session_state.get('sync_status') == 'success':
+    st.sidebar.success(f"✅ Sincronizado a las {st.session_state.get('last_sync')} hrs")
+    st.toast(f"✅ ¡Datos en tiempo real actualizados desde SINCA! ({st.session_state.get('last_sync')})", icon="🌬️")
+    st.session_state.sync_status = 'displayed'
+elif st.session_state.get('sync_status') == 'warning':
+    st.sidebar.warning(f"⚠️ Servidores SINCA no respondieron a las {st.session_state.get('last_sync')}. Operando con respaldo local.")
+    st.toast("⚠️ Operando con respaldo local de contingencia.", icon="⚠️")
+    st.session_state.sync_status = 'displayed'
+elif st.session_state.get('last_sync'):
+    st.sidebar.caption(f"🕒 Sincronización: {st.session_state.get('last_sync')} hrs")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎛️ Simulación Ciudadana")
@@ -267,7 +377,9 @@ else:
 # --- ENCABEZADO CIUDADANO ---
 st.title("🌬️ Alerta Temprana de Calidad del Aire")
 st.markdown("### **Estación Parque O'Higgins — Santiago de Chile**")
-st.caption(f"ℹ️ {st.session_state.source} | Última medición oficial: **{base_dt.strftime('%d/%m/%Y')}** | Nivel Registrado: **{in_l0:.1f} µg/m³**")
+hora_str = f" a las {st.session_state.last_hora}" if st.session_state.get('last_hora') else ""
+sync_str = f" | Sincronizado: {st.session_state.get('last_sync')}" if st.session_state.get('last_sync') else ""
+st.caption(f"ℹ️ {st.session_state.source} | Medición de la estación: **{base_dt.strftime('%d/%m/%Y')}{hora_str}** | Nivel Registrado: **{in_l0:.1f} µg/m³**{sync_str}")
 
 # PESTAÑAS CIUDADANAS
 tab1, tab2 = st.tabs([
